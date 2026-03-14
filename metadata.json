@@ -1,0 +1,7 @@
+{
+  "name": "Maiêutica",
+  "description": "A Socratic dialogue partner that helps you explore deep ideas through inquisitive questioning, powered by Gemini 2.5 Native Audio.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
