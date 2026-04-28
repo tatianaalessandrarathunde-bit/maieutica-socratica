@@ -5,6 +5,7 @@ import react from '@vitejs/plugin-react';
 export default defineConfig(({ mode }) => {
     const env = loadEnv(mode, '.', '');
     const aiKey = env.VITE_API_KEY || env.GEMINI_API_KEY || '';
+    const supabaseKey = env.VITE_SUPABASE_ANON_KEY || env.SUPABASE_ANON_KE || '';
     return {
       server: {
         port: 3000,
@@ -15,7 +16,7 @@ export default defineConfig(({ mode }) => {
         'process.env.API_KEY': JSON.stringify(aiKey),
         'process.env.GEMINI_API_KEY': JSON.stringify(aiKey),
         'process.env.SUPABASE_URL': JSON.stringify(env.VITE_SUPABASE_URL),
-        'process.env.SUPABASE_KEY': JSON.stringify(env.VITE_SUPABASE_KEY)
+        'process.env.SUPABASE_KEY': JSON.stringify(supabaseKey)
       },
       resolve: {
         alias: {
