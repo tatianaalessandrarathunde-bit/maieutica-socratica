@@ -99,17 +99,37 @@ export const getUserById = async (userId: string): Promise<User | null> => {
 export const getUserByEmail = async (email: string): Promise<User | null> => {
   const normalizedEmail = email.toLowerCase().trim();
   try {
-    const { data } = await supabase.from('users').select('*').eq('email', normalizedEmail).maybeSingle();
-    if (data) {
-      await cacheLocally('users', { ...data, _synced: true });
-      return data;
+    const { data, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('email', normalizedEmail)
+      .limit(1);
+
+    if (error) {
+      throw error;
     }
-  } catch (e) {}
-  const db = await initDB();
-  const tx = db.transaction('users', 'readonly');
-  const index = tx.objectStore('users').index('email');
-  const req = index.get(normalizedEmail);
-  return new Promise(r => req.onsuccess = () => r(req.result || null));
+
+    const user = data?.[0];
+    if (user) {
+      await cacheLocally('users', { ...user, _synced: true });
+      return user as User;
+    }
+
+    // Sem usuário na nuvem: tenta cache local.
+  } catch (e) {
+    console.warn('[Auth] Falha ao buscar usuário no Supabase:', e);
+  }
+
+  try {
+    const db = await initDB();
+    const tx = db.transaction('users', 'readonly');
+    const index = tx.objectStore('users').index('email');
+    const req = index.get(normalizedEmail);
+    return await new Promise<User | null>(r => (req.onsuccess = () => r(req.result || null)));
+  } catch (e) {
+    console.warn('[Auth] Falha ao buscar usuário no IndexedDB:', e);
+    return null;
+  }
 };
 
 export const saveJourney = async (journey: Journey): Promise<void> => {

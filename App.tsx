@@ -203,14 +203,50 @@ create table if not exists notifications (
 -- Habilitar RLS em tudo para Segurança Máxima
 alter table users enable row level security;
 alter table journeys enable row level security;
+alter table questions enable row level security;
 alter table answers enable row level security;
 alter table notifications enable row level security;
 
--- Política simples: Usuários podem ler/escrever seus próprios dados
-create policy "Usuários veem apenas seus dados" on users for all using (true);
-create policy "Journeys privadas" on journeys for all using (true);
-create policy "Answers privadas" on answers for all using (true);
-create policy "Notifications privadas" on notifications for all using (true);`;
+-- Garantir permissões para chamadas com chave publishable (anon/authenticated)
+grant usage on schema public to anon, authenticated;
+grant select, insert, update, delete on table users to anon, authenticated;
+grant select, insert, update, delete on table journeys to anon, authenticated;
+grant select, insert, update, delete on table questions to anon, authenticated;
+grant select, insert, update, delete on table answers to anon, authenticated;
+grant select, insert, update, delete on table notifications to anon, authenticated;
+
+-- Remover políticas antigas para recriar com regras explícitas de INSERT (WITH CHECK)
+drop policy if exists "Usuários veem apenas seus dados" on users;
+drop policy if exists "Journeys privadas" on journeys;
+drop policy if exists "Questions privadas" on questions;
+drop policy if exists "Answers privadas" on answers;
+drop policy if exists "Notifications privadas" on notifications;
+
+-- Políticas permissivas para o app atual (sem Supabase Auth)
+create policy "Usuários veem apenas seus dados" on users
+for all to anon, authenticated
+using (true)
+with check (true);
+
+create policy "Journeys privadas" on journeys
+for all to anon, authenticated
+using (true)
+with check (true);
+
+create policy "Questions privadas" on questions
+for all to anon, authenticated
+using (true)
+with check (true);
+
+create policy "Answers privadas" on answers
+for all to anon, authenticated
+using (true)
+with check (true);
+
+create policy "Notifications privadas" on notifications
+for all to anon, authenticated
+using (true)
+with check (true);`;
 
 // --- COMPONENTES DE INTERFACE ---
 
@@ -434,13 +470,14 @@ const App: React.FC = () => {
     setAuthError('');
     setIsActionLoading(true);
     const normalizedEmail = emailInput.trim().toLowerCase();
+    const normalizedPassword = passwordInput.trim();
     try {
       if (isRegistering) {
         const user: User = { 
           id: 'u_' + Math.random().toString(36).slice(2, 11) + Date.now().toString(36), 
           name: nameInput.trim() || 'Discípulo', 
           email: normalizedEmail, 
-          password: passwordInput, 
+          password: normalizedPassword, 
           userType: authType, 
           createdAt: Date.now() 
         };
@@ -451,7 +488,7 @@ const App: React.FC = () => {
         setViewState(user.userType === 'teacher' ? 'master_dashboard' : 'dashboard');
       } else {
         const user = await getUserByEmail(normalizedEmail);
-        if (user && user.password === passwordInput) {
+        if (user && user.password === normalizedPassword) {
           localStorage.setItem('maieutica_user_id', user.id);
           setCurrentUser(user);
           refreshData(user);
