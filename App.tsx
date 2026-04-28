@@ -745,9 +745,32 @@ const App: React.FC = () => {
                 <h3 className="serif text-2xl mb-4 text-[#d4af37]">{j.name}</h3>
                 <p className="text-slate-500 italic mb-8 flex-grow leading-relaxed">"{j.description}"</p>
                 <PremiumButton onClick={async () => {
-                  const qs = await getQuestionsByJourney(j.id);
+                  let qs = await getQuestionsByJourney(j.id);
+                  if (qs.length === 0) {
+                    // Recupera perguntas padrão quando o backend não retornou questões da jornada.
+                    const defaultJourney = DEFAULT_JOURNEYS.find(dj => j.id.startsWith(`${dj.id}_`));
+                    if (defaultJourney) {
+                      for (let i = 0; i < defaultJourney.questions.length; i++) {
+                        await saveQuestion({
+                          id: `q_${j.id}_${i}`,
+                          journeyId: j.id,
+                          text: defaultJourney.questions[i].text,
+                          order: i,
+                          responseType: defaultJourney.questions[i].type
+                        });
+                      }
+                      qs = await getQuestionsByJourney(j.id);
+                    }
+                  }
                   const ans = await getAnswersByJourney(j.id);
-                  setActiveQuestions(qs); setActiveJourney(j); setActiveAnswers(ans); setCurrentQIndex(ans.length);
+                  const nextQuestionIndex =
+                    qs.length === 0
+                      ? 0
+                      : (ans.length >= qs.length ? 0 : ans.length);
+                  setActiveQuestions(qs);
+                  setActiveJourney(j);
+                  setActiveAnswers(ans);
+                  setCurrentQIndex(nextQuestionIndex);
                   setViewState('preparation');
                 }}>{j.status === 'completed' ? 'Revisitar' : (j.progress && j.progress > 0 ? 'Continuar' : 'Iniciar')}</PremiumButton>
               </div>
@@ -917,6 +940,18 @@ const App: React.FC = () => {
                } finally { setIsActionLoading(false); }
              }}>Entregar ao Templo</PremiumButton>
           </div>
+        </div>
+      )}
+
+      {viewState === 'dialogue' && activeJourney && !activeQuestions[currentQIndex] && (
+        <div className="max-w-3xl mx-auto text-center space-y-10 py-24 animate-in fade-in">
+          <h3 className="serif text-3xl text-[#d4af37]">Perguntas indisponíveis</h3>
+          <p className="text-slate-400 italic">
+            O Templo não encontrou as indagações desta jornada. Volte ao painel e tente abrir novamente.
+          </p>
+          <PremiumButton onClick={() => setViewState('dashboard')} variant="outline">
+            Retornar ao Painel
+          </PremiumButton>
         </div>
       )}
 

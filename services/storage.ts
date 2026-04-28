@@ -2,8 +2,18 @@
 import { createClient } from '@supabase/supabase-js';
 import { User, Journey, Question, Answer, Notification } from '../types';
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_KEY;
+const SUPABASE_URL =
+  import.meta.env.VITE_SUPABASE_URL ||
+  (process.env.SUPABASE_URL as string | undefined) ||
+  '';
+const SUPABASE_KEY =
+  import.meta.env.VITE_SUPABASE_ANON_KEY ||
+  (process.env.SUPABASE_KEY as string | undefined) ||
+  '';
+
+if (!SUPABASE_URL || !SUPABASE_KEY) {
+  throw new Error('Supabase env ausente. Defina VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY.');
+}
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
@@ -178,16 +188,27 @@ export const saveQuestion = async (q: Question): Promise<void> => {
   let synced = false;
   try {
     const { error } = await supabase.from('questions').upsert(q);
-    if (!error) synced = true;
-  } catch (e) {}
+    if (error) {
+      console.warn('[Questions] Falha ao salvar no Supabase:', error);
+    } else {
+      synced = true;
+    }
+  } catch (e) {
+    console.warn('[Questions] Exceção ao salvar no Supabase:', e);
+  }
   await cacheLocally('questions', { ...q, _synced: synced });
 };
 
 export const getQuestionsByJourney = async (journeyId: string): Promise<Question[]> => {
   try {
-    const { data } = await supabase.from('questions').select('*').eq('journeyId', journeyId).order('order');
+    const { data, error } = await supabase.from('questions').select('*').eq('journeyId', journeyId).order('order');
+    if (error) {
+      console.warn('[Questions] Falha ao buscar no Supabase:', error);
+    }
     if (data) return data;
-  } catch (e) {}
+  } catch (e) {
+    console.warn('[Questions] Exceção ao buscar no Supabase:', e);
+  }
   const db = await initDB();
   const req = db.transaction('questions', 'readonly').objectStore('questions').getAll();
   return new Promise(r => req.onsuccess = () => r((req.result as Question[]).filter(q => q.journeyId === journeyId).sort((a,b) => a.order - b.order)));
