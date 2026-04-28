@@ -16,6 +16,7 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
 }
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+const USER_COLUMNS = 'id,authId,name,email,userType,createdAt';
 
 const isDev = 
   window.location.hostname === 'localhost' || 
@@ -26,6 +27,7 @@ const DB_NAME = isDev ? 'Maieutica_v16_DEV' : 'Maieutica_v16_PROD';
 const DB_VERSION = 16;
 
 const STORES = ['users', 'journeys', 'questions', 'answers', 'notifications'];
+const safeErr = (e: any) => e?.code || e?.message || 'unknown_error';
 
 export const initDB = (): Promise<IDBDatabase> => {
   return new Promise((resolve, reject) => {
@@ -79,8 +81,8 @@ export const syncOfflineData = async (): Promise<{ success: boolean; count: numb
     }
     return { success: true, count: syncCount };
   } catch (e) {
-    console.error("[Sincronia] Erro:", e);
-    return { success: false, count: syncCount, error: e };
+    console.error("[Sincronia] Erro:", safeErr(e));
+    return { success: false, count: syncCount, error: safeErr(e) };
   }
 };
 
@@ -95,7 +97,7 @@ export const saveUser = async (user: User): Promise<void> => {
 
 export const getUserById = async (userId: string): Promise<User | null> => {
   try {
-    const { data } = await supabase.from('users').select('*').eq('id', userId).maybeSingle();
+    const { data } = await supabase.from('users').select(USER_COLUMNS).eq('id', userId).maybeSingle();
     if (data) {
       await cacheLocally('users', { ...data, _synced: true });
       return data;
@@ -111,7 +113,7 @@ export const getUserByEmail = async (email: string): Promise<User | null> => {
   try {
     const { data, error } = await supabase
       .from('users')
-      .select('*')
+      .select(USER_COLUMNS)
       .eq('email', normalizedEmail)
       .limit(1);
 
@@ -127,7 +129,7 @@ export const getUserByEmail = async (email: string): Promise<User | null> => {
 
     // Sem usuário na nuvem: tenta cache local.
   } catch (e) {
-    console.warn('[Auth] Falha ao buscar usuário no Supabase:', e);
+    console.warn('[Auth] Falha ao buscar usuário no Supabase:', safeErr(e));
   }
 
   try {
@@ -137,9 +139,59 @@ export const getUserByEmail = async (email: string): Promise<User | null> => {
     const req = index.get(normalizedEmail);
     return await new Promise<User | null>(r => (req.onsuccess = () => r(req.result || null)));
   } catch (e) {
-    console.warn('[Auth] Falha ao buscar usuário no IndexedDB:', e);
+    console.warn('[Auth] Falha ao buscar usuário no IndexedDB:', safeErr(e));
     return null;
   }
+};
+
+export const getUserByAuthId = async (authId: string): Promise<User | null> => {
+  try {
+    const { data, error } = await supabase
+      .from('users')
+      .select(USER_COLUMNS)
+      .eq('authId', authId)
+      .maybeSingle();
+    if (error) throw error;
+    if (data) {
+      await cacheLocally('users', { ...data, _synced: true });
+      return data as User;
+    }
+  } catch (e) {
+    console.warn('[Auth] Falha ao buscar perfil por authId:', safeErr(e));
+  }
+  return null;
+};
+
+export const signUpWithPassword = async (
+  email: string,
+  password: string
+): Promise<{ authId: string }> => {
+  const { data, error } = await supabase.auth.signUp({ email, password });
+  if (error || !data.user) {
+    throw new Error('Não foi possível criar conta no Supabase Auth.');
+  }
+  return { authId: data.user.id };
+};
+
+export const signInWithPassword = async (
+  email: string,
+  password: string
+): Promise<{ authId: string }> => {
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+  if (error || !data.user) {
+    throw new Error('Credenciais inválidas.');
+  }
+  return { authId: data.user.id };
+};
+
+export const getCurrentAuthId = async (): Promise<string | null> => {
+  const { data, error } = await supabase.auth.getUser();
+  if (error || !data.user) return null;
+  return data.user.id;
+};
+
+export const signOutAuth = async (): Promise<void> => {
+  await supabase.auth.signOut();
 };
 
 export const saveJourney = async (journey: Journey): Promise<void> => {
@@ -189,12 +241,12 @@ export const saveQuestion = async (q: Question): Promise<void> => {
   try {
     const { error } = await supabase.from('questions').upsert(q);
     if (error) {
-      console.warn('[Questions] Falha ao salvar no Supabase:', error);
+      console.warn('[Questions] Falha ao salvar no Supabase:', safeErr(error));
     } else {
       synced = true;
     }
   } catch (e) {
-    console.warn('[Questions] Exceção ao salvar no Supabase:', e);
+    console.warn('[Questions] Exceção ao salvar no Supabase:', safeErr(e));
   }
   await cacheLocally('questions', { ...q, _synced: synced });
 };
@@ -203,11 +255,11 @@ export const getQuestionsByJourney = async (journeyId: string): Promise<Question
   try {
     const { data, error } = await supabase.from('questions').select('*').eq('journeyId', journeyId).order('order');
     if (error) {
-      console.warn('[Questions] Falha ao buscar no Supabase:', error);
+      console.warn('[Questions] Falha ao buscar no Supabase:', safeErr(error));
     }
     if (data) return data;
   } catch (e) {
-    console.warn('[Questions] Exceção ao buscar no Supabase:', e);
+    console.warn('[Questions] Exceção ao buscar no Supabase:', safeErr(e));
   }
   const db = await initDB();
   const req = db.transaction('questions', 'readonly').objectStore('questions').getAll();
@@ -251,7 +303,7 @@ export const getNotifications = async (userId: string): Promise<Notification[]> 
 
 export const getAllStudents = async (): Promise<User[]> => {
   try {
-    const { data } = await supabase.from('users').select('*').eq('userType', 'student');
+    const { data } = await supabase.from('users').select(USER_COLUMNS).eq('userType', 'student');
     return data || [];
   } catch (e) { return []; }
 }

@@ -1,13 +1,13 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { GoogleGenAI, Modality, LiveServerMessage } from "@google/genai";
 import { User, Journey, Question, Answer, UserType, QuestionResponseType, Notification as TempleNotification } from './types';
 import { 
-  saveUser, getUserById, getUserByEmail, saveJourney, getAllJourneys, 
+  saveUser, getUserByAuthId, saveJourney, getAllJourneys, 
   saveQuestion, getQuestionsByJourney, saveAnswer, getAnswersByJourney, getAllStudents,
-  getNotifications, saveNotification, supabase, ensureLiveJourney, syncOfflineData
+  getNotifications, saveNotification, supabase, syncOfflineData,
+  signInWithPassword, signUpWithPassword, getCurrentAuthId, signOutAuth
 } from './services/storage';
-import { decode, decodeAudioData, encode, createBlob } from './utils/audio';
+import { decode, decodeAudioData } from './utils/audio';
 
 // --- BIBLIOTECA SAGRADA (100 INDAGAÇÕES) ---
 const DEFAULT_JOURNEYS = [
@@ -153,9 +153,9 @@ const SACRED_SQL = `-- SCHEMA SAGRADO MAIÊUTICA (Copie e cole no SQL Editor do 
 -- 1. Tabela de Usuários
 create table if not exists users (
   id text primary key,
+  "authId" text unique not null,
   name text not null,
   email text unique not null,
-  password text,
   "userType" text not null,
   "createdAt" bigint not null
 );
@@ -207,13 +207,13 @@ alter table questions enable row level security;
 alter table answers enable row level security;
 alter table notifications enable row level security;
 
--- Garantir permissões para chamadas com chave publishable (anon/authenticated)
-grant usage on schema public to anon, authenticated;
-grant select, insert, update, delete on table users to anon, authenticated;
-grant select, insert, update, delete on table journeys to anon, authenticated;
-grant select, insert, update, delete on table questions to anon, authenticated;
-grant select, insert, update, delete on table answers to anon, authenticated;
-grant select, insert, update, delete on table notifications to anon, authenticated;
+-- Garantir permissões mínimas para chamadas autenticadas
+grant usage on schema public to authenticated;
+grant select, insert, update on table users to authenticated;
+grant select, insert, update, delete on table journeys to authenticated;
+grant select, insert, update, delete on table questions to authenticated;
+grant select, insert, update, delete on table answers to authenticated;
+grant select, insert, update, delete on table notifications to authenticated;
 
 -- Remover políticas antigas para recriar com regras explícitas de INSERT (WITH CHECK)
 drop policy if exists "Usuários veem apenas seus dados" on users;
@@ -222,31 +222,37 @@ drop policy if exists "Questions privadas" on questions;
 drop policy if exists "Answers privadas" on answers;
 drop policy if exists "Notifications privadas" on notifications;
 
--- Políticas permissivas para o app atual (sem Supabase Auth)
+-- Políticas seguras por sessão Supabase Auth
 create policy "Usuários veem apenas seus dados" on users
-for all to anon, authenticated
-using (true)
-with check (true);
+for all to authenticated
+using ("authId" = auth.uid()::text)
+with check ("authId" = auth.uid()::text);
 
 create policy "Journeys privadas" on journeys
-for all to anon, authenticated
-using (true)
-with check (true);
+for all to authenticated
+using (exists (select 1 from users u where u.id = journeys."userId" and u."authId" = auth.uid()::text))
+with check (exists (select 1 from users u where u.id = journeys."userId" and u."authId" = auth.uid()::text));
 
 create policy "Questions privadas" on questions
-for all to anon, authenticated
-using (true)
-with check (true);
+for all to authenticated
+using (exists (
+  select 1 from journeys j join users u on u.id = j."userId"
+  where j.id = questions."journeyId" and u."authId" = auth.uid()::text
+))
+with check (exists (
+  select 1 from journeys j join users u on u.id = j."userId"
+  where j.id = questions."journeyId" and u."authId" = auth.uid()::text
+));
 
 create policy "Answers privadas" on answers
-for all to anon, authenticated
-using (true)
-with check (true);
+for all to authenticated
+using (exists (select 1 from users u where u.id = answers."userId" and u."authId" = auth.uid()::text))
+with check (exists (select 1 from users u where u.id = answers."userId" and u."authId" = auth.uid()::text));
 
 create policy "Notifications privadas" on notifications
-for all to anon, authenticated
-using (true)
-with check (true);`;
+for all to authenticated
+using (exists (select 1 from users u where u.id = notifications."userId" and u."authId" = auth.uid()::text))
+with check (exists (select 1 from users u where u.id = notifications."userId" and u."authId" = auth.uid()::text));`;
 
 // --- COMPONENTES DE INTERFACE ---
 
@@ -327,14 +333,7 @@ const App: React.FC = () => {
   const [liveTranscription, setLiveTranscription] = useState<string[]>([]);
   
   const audioContextRef = useRef<AudioContext | null>(null);
-  const liveSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
-  const nextStartTimeRef = useRef<number>(0);
-  const sessionPromiseRef = useRef<Promise<any> | null>(null);
   const currentSocraticSourceRef = useRef<AudioBufferSourceNode | null>(null);
-  
-  const currentInputTranscriptionRef = useRef('');
-  const currentOutputTranscriptionRef = useRef('');
-  const isSavingTurnRef = useRef(false);
 
   useEffect(() => {
     checkUser();
@@ -353,7 +352,6 @@ const App: React.FC = () => {
 
     return () => {
       stopAllAudio();
-      if (sessionPromiseRef.current) sessionPromiseRef.current.then(s => s.close()).catch(() => {});
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
     };
@@ -397,21 +395,20 @@ const App: React.FC = () => {
       try { currentSocraticSourceRef.current.stop(); } catch(e) {}
       currentSocraticSourceRef.current = null;
     }
-    liveSourcesRef.current.forEach(s => { try { s.stop(); } catch(e) {} });
-    liveSourcesRef.current.clear();
     setIsAiSpeaking(false);
   };
 
   const checkUser = async () => {
-    const userId = localStorage.getItem('maieutica_user_id');
-    if (userId) {
-      const user = await getUserById(userId);
-      if (user) {
-        setCurrentUser(user);
-        if (user.userType === 'student') await seedDefaultJourneys(user.id);
-        refreshData(user);
-        setViewState(user.userType === 'teacher' ? 'master_dashboard' : 'dashboard');
-      }
+    const authId = await getCurrentAuthId();
+    if (authId) {
+      const user = await getUserByAuthId(authId);
+      if (!user) return;
+      setCurrentUser(user);
+      if (user.userType === 'student') await seedDefaultJourneys(user.id);
+      refreshData(user);
+      setViewState(user.userType === 'teacher' ? 'master_dashboard' : 'dashboard');
+    } else {
+      setViewState('landing');
     }
   };
 
@@ -470,32 +467,33 @@ const App: React.FC = () => {
     setAuthError('');
     setIsActionLoading(true);
     const normalizedEmail = emailInput.trim().toLowerCase();
-    const normalizedPassword = passwordInput.trim();
+    const normalizedPassword = passwordInput;
     try {
       if (isRegistering) {
+        const { authId } = await signUpWithPassword(normalizedEmail, normalizedPassword);
         const user: User = { 
           id: 'u_' + Math.random().toString(36).slice(2, 11) + Date.now().toString(36), 
+          authId,
           name: nameInput.trim() || 'Discípulo', 
           email: normalizedEmail, 
-          password: normalizedPassword, 
           userType: authType, 
           createdAt: Date.now() 
         };
         await saveUser(user);
-        localStorage.setItem('maieutica_user_id', user.id);
         setCurrentUser(user);
         if (user.userType === 'student') await seedDefaultJourneys(user.id);
         setViewState(user.userType === 'teacher' ? 'master_dashboard' : 'dashboard');
       } else {
-        const user = await getUserByEmail(normalizedEmail);
-        if (user && user.password === normalizedPassword) {
-          localStorage.setItem('maieutica_user_id', user.id);
-          setCurrentUser(user);
-          refreshData(user);
-          setViewState(user.userType === 'teacher' ? 'master_dashboard' : 'dashboard');
-        } else throw new Error('Credenciais profanas.');
+        const { authId } = await signInWithPassword(normalizedEmail, normalizedPassword);
+        const user = await getUserByAuthId(authId);
+        if (!user) throw new Error('Perfil não encontrado para a sessão autenticada.');
+        setCurrentUser(user);
+        refreshData(user);
+        setViewState(user.userType === 'teacher' ? 'master_dashboard' : 'dashboard');
       }
-    } catch (err: any) { setAuthError(err.message); } 
+    } catch (err: any) {
+      setAuthError(isRegistering ? 'Não foi possível concluir o cadastro.' : 'Credenciais inválidas.');
+    } 
     finally { setIsActionLoading(false); }
   };
 
@@ -514,136 +512,36 @@ const App: React.FC = () => {
     } catch (e) { setIsAiSpeaking(false); }
   };
 
-  const startLiveOracle = async () => {
-    if (!currentUser) return;
-    setViewState('live_oracle');
-    setLiveTranscription([]);
-    setIsThinking(true);
-    setOracleError(null);
-    stopAllAudio();
-    
-    currentInputTranscriptionRef.current = '';
-    currentOutputTranscriptionRef.current = '';
-    isSavingTurnRef.current = false;
+  const speakWithBrowser = (text: string) => {
+    if (!('speechSynthesis' in window) || !text?.trim()) return;
+    window.speechSynthesis.cancel();
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.lang = 'pt-BR';
+    utter.rate = 0.95;
+    utter.pitch = 0.9;
+    utter.onstart = () => setIsAiSpeaking(true);
+    utter.onend = () => setIsAiSpeaking(false);
+    utter.onerror = () => setIsAiSpeaking(false);
+    window.speechSynthesis.speak(utter);
+  };
 
-    try {
-      const liveJourney = await ensureLiveJourney(currentUser.id);
-      const outCtx = await initAudioContext();
-      const inCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      
-      nextStartTimeRef.current = outCtx.currentTime;
-      
-      const sessionPromise = ai.live.connect({
-        model: 'gemini-2.5-flash-native-audio-preview-12-2025',
-        callbacks: {
-          onopen: () => {
-            const source = inCtx.createMediaStreamSource(stream);
-            const scriptProcessor = inCtx.createScriptProcessor(4096, 1, 1);
-            scriptProcessor.onaudioprocess = (ev) => {
-              const input = ev.inputBuffer.getChannelData(0);
-              sessionPromise.then(s => s.sendRealtimeInput({ media: createBlob(input) })).catch(() => {});
-            };
-            source.connect(scriptProcessor);
-            scriptProcessor.connect(inCtx.destination);
-            setIsThinking(false);
-          },
-          onmessage: async (msg: LiveServerMessage) => {
-            if (msg.serverContent?.interrupted) {
-              liveSourcesRef.current.forEach(s => { try { s.stop(); } catch(e) {} });
-              liveSourcesRef.current.clear();
-              nextStartTimeRef.current = outCtx.currentTime;
-              setIsAiSpeaking(false);
-              return;
-            }
-
-            if (msg.serverContent?.inputTranscription) {
-              currentInputTranscriptionRef.current += msg.serverContent.inputTranscription.text;
-            }
-            if (msg.serverContent?.outputTranscription) {
-              const txt = msg.serverContent.outputTranscription.text;
-              currentOutputTranscriptionRef.current += txt;
-              setLiveTranscription(prev => {
-                const updated = [...prev, txt];
-                return updated.length > 60 ? updated.slice(-60) : updated;
-              });
-            }
-
-            if (msg.serverContent?.turnComplete) {
-              const finalInput = currentInputTranscriptionRef.current.trim();
-              const finalOutput = currentOutputTranscriptionRef.current.trim();
-              
-              currentInputTranscriptionRef.current = '';
-              currentOutputTranscriptionRef.current = '';
-
-              if ((finalInput || finalOutput) && !isSavingTurnRef.current) {
-                isSavingTurnRef.current = true;
-                const turnId = 'la_' + Date.now() + '_' + Math.random().toString(36).slice(2, 9);
-                saveAnswer({
-                  id: turnId,
-                  userId: currentUser.id,
-                  journeyId: liveJourney.id,
-                  questionId: 'live_turn',
-                  text: `**Discípulo:** ${finalInput || '(Meditação)'}\n\n**Sócrates:** ${finalOutput || '(Sopro da Alma)'}`,
-                  timestamp: Date.now()
-                }).finally(() => {
-                  isSavingTurnRef.current = false;
-                });
-              }
-            }
-
-            const modelParts = msg.serverContent?.modelTurn?.parts || [];
-            for (const part of modelParts) {
-              if (part.inlineData?.data) {
-                setIsAiSpeaking(true);
-                nextStartTimeRef.current = Math.max(nextStartTimeRef.current, outCtx.currentTime);
-                const buffer = await decodeAudioData(decode(part.inlineData.data), outCtx, 24000, 1);
-                const source = outCtx.createBufferSource();
-                source.buffer = buffer;
-                source.connect(outCtx.destination);
-                source.onended = () => { 
-                  liveSourcesRef.current.delete(source); 
-                  if (liveSourcesRef.current.size === 0) setIsAiSpeaking(false); 
-                };
-                source.start(nextStartTimeRef.current);
-                nextStartTimeRef.current += buffer.duration;
-                liveSourcesRef.current.add(source);
-              }
-            }
-          },
-          onclose: () => {
-            if (viewState === 'live_oracle') {
-              setOracleError("A conexão foi encerrada. O silêncio retornou ao Templo.");
-              setIsThinking(false);
-            }
-          },
-          onerror: (e) => {
-            console.error("Live API Error:", e);
-            setOracleError("Interferência divina na conexão. Verifique sua rede.");
-            setIsThinking(false);
-          }
-        },
-        config: { 
-          responseModalities: [Modality.AUDIO], 
-          outputAudioTranscription: {},
-          inputAudioTranscription: {},
-          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Charon' } } },
-          systemInstruction: 'Você é Sócrates. Seu objetivo é ajudar o discípulo a dar à luz ao conhecimento próprio através do método maiêutico. Questione cada certeza com ironia benevolente. Nunca dê respostas diretas. Seja breve e profundo.'
-        }
-      });
-      sessionPromiseRef.current = sessionPromise;
-    } catch (e: any) { 
-      setOracleError("O Templo não conseguiu ouvir sua voz (erro de microfone).");
-      setIsThinking(false);
+  const callOracleAPI = async (userInput: string): Promise<{ text: string; audioBase64?: string }> => {
+    const res = await fetch('/api/gemini', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'reflection', userInput })
+    });
+    if (!res.ok) {
+      throw new Error('Falha no oráculo seguro.');
     }
+    return await res.json();
+  };
+
+  const startLiveOracle = async () => {
+    setOracleError("Consulta por voz em tempo real foi desativada por segurança até a migração completa para backend.");
   };
 
   const stopLiveOracle = async () => {
-    if (sessionPromiseRef.current) { 
-      try { const s = await sessionPromiseRef.current; s.close(); } catch(e) {}
-      sessionPromiseRef.current = null; 
-    }
     stopAllAudio();
     setIsThinking(false);
     setViewState('dashboard');
@@ -690,7 +588,16 @@ const App: React.FC = () => {
         )}
         <div className="text-right">
           <button onClick={() => setViewState('profile')} className="text-[10px] text-[#d4af37] font-black uppercase tracking-widest block hover:underline">{currentUser?.name}</button>
-          <button onClick={() => { localStorage.clear(); window.location.reload(); }} className="text-[8px] uppercase font-bold text-red-500/40 hover:text-red-500">Abandonar Templo</button>
+          <button
+            onClick={async () => {
+              await signOutAuth();
+              setCurrentUser(null);
+              setViewState('landing');
+            }}
+            className="text-[8px] uppercase font-bold text-red-500/40 hover:text-red-500"
+          >
+            Abandonar Templo
+          </button>
         </div>
       </div>
     </header>
@@ -915,24 +822,15 @@ const App: React.FC = () => {
                  const prog = Math.round(((currentQIndex + 1) / activeQuestions.length) * 100);
                  await saveJourney({...activeJourney, progress: prog, status: prog === 100 ? 'completed' : 'in_progress'});
                  setIsThinking(true); setViewState('reflection');
-                 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-                 const prompt = `Você é Sócrates. Reflita sobre este pensamento: "${currentResponse}". Seja poético, breve e socrático.`;
-                 let reflectionText = "...";
-                 try {
-                   const resp = await ai.models.generateContent({ model: 'gemini-3-flash-preview', contents: prompt });
-                   reflectionText = resp.text || "...";
-                 } catch (primaryErr) {
-                   // Fallback para um modelo mais estável quando o preview falhar.
-                   const fallbackResp = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt });
-                   reflectionText = fallbackResp.text || "...";
-                 }
+                const oracleResp = await callOracleAPI(currentResponse);
+                const reflectionText = oracleResp.text || "...";
                  setCurrentReflection(reflectionText);
                  setIsThinking(false);
-                 try {
-                   const ttsResp = await ai.models.generateContent({ model: "gemini-2.5-flash-preview-tts", contents: [{ parts: [{ text: `${reflectionText}` }] }], config: { responseModalities: [Modality.AUDIO], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Charon' } } } } });
-                   const base64Audio = ttsResp.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-                   if (base64Audio) playSocraticAudio(base64Audio);
-                 } catch (ttsErr) {}
+                if (oracleResp.audioBase64) {
+                  playSocraticAudio(oracleResp.audioBase64);
+                } else {
+                  speakWithBrowser(reflectionText);
+                }
                } catch (e) {
                  setCurrentReflection("O silêncio também ensina. Tente novamente em instantes.");
                  setIsThinking(false);

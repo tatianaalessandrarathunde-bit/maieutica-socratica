@@ -4,9 +4,9 @@ export type QuestionResponseType = 'free_text' | 'multiple_choice';
 
 export interface User {
   id: string;
+  authId: string;
   name: string;
   email: string;
-  password?: string;
   userType: UserType;
   createdAt: number;
 }

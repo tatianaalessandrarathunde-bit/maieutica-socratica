@@ -18,8 +18,14 @@
 ## 🛠️ Configuração
 1. Clone o repositório.
 2. Crie um arquivo `.env.local` baseado em `.env.example`.
-3. Defina a chave do Google AI Studio em `VITE_API_KEY`.
-4. Configure seu projeto no **Supabase** com as tabelas: `users`, `journeys`, `questions`, `answers`, `notifications`.
+3. Defina `VITE_SUPABASE_URL` e `VITE_SUPABASE_ANON_KEY` para o frontend.
+4. Defina `GEMINI_API_KEY` apenas no ambiente de servidor (Vercel/Functions).
+5. Configure seu projeto no **Supabase** com as tabelas: `users`, `journeys`, `questions`, `answers`, `notifications`.
+
+## Segurança recomendada
+- Não armazene senhas em tabelas próprias: use Supabase Auth.
+- Nunca exponha `GEMINI_API_KEY` no frontend (`VITE_*`).
+- Rotacione imediatamente qualquer chave previamente exposta e atualize os ambientes.
 
 ## 🏛️ Filosofia do Projeto
 Baseado no método de Sócrates, o app não entrega respostas prontas, mas faz perguntas que desafiam as premissas do interlocutor.
