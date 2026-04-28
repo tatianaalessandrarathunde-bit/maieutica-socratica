@@ -893,15 +893,28 @@ const App: React.FC = () => {
                  await saveJourney({...activeJourney, progress: prog, status: prog === 100 ? 'completed' : 'in_progress'});
                  setIsThinking(true); setViewState('reflection');
                  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-                 const resp = await ai.models.generateContent({ model: 'gemini-3-flash-preview', contents: `Você é Sócrates. Reflita sobre este pensamento: "${currentResponse}". Seja poético, breve e socrático.` });
-                 const reflectionText = resp.text || "...";
-                 setCurrentReflection(reflectionText); setIsThinking(false);
+                 const prompt = `Você é Sócrates. Reflita sobre este pensamento: "${currentResponse}". Seja poético, breve e socrático.`;
+                 let reflectionText = "...";
+                 try {
+                   const resp = await ai.models.generateContent({ model: 'gemini-3-flash-preview', contents: prompt });
+                   reflectionText = resp.text || "...";
+                 } catch (primaryErr) {
+                   // Fallback para um modelo mais estável quando o preview falhar.
+                   const fallbackResp = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: prompt });
+                   reflectionText = fallbackResp.text || "...";
+                 }
+                 setCurrentReflection(reflectionText);
+                 setIsThinking(false);
                  try {
                    const ttsResp = await ai.models.generateContent({ model: "gemini-2.5-flash-preview-tts", contents: [{ parts: [{ text: `${reflectionText}` }] }], config: { responseModalities: [Modality.AUDIO], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Charon' } } } } });
                    const base64Audio = ttsResp.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
                    if (base64Audio) playSocraticAudio(base64Audio);
                  } catch (ttsErr) {}
-               } catch (e) {} finally { setIsActionLoading(false); }
+               } catch (e) {
+                 setCurrentReflection("O silêncio também ensina. Tente novamente em instantes.");
+                 setIsThinking(false);
+                 setViewState('reflection');
+               } finally { setIsActionLoading(false); }
              }}>Entregar ao Templo</PremiumButton>
           </div>
         </div>

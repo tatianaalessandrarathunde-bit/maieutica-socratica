@@ -17,8 +17,9 @@
 
 ## 🛠️ Configuração
 1. Clone o repositório.
-2. Certifique-se de ter uma `API_KEY` do Google AI Studio.
-3. Configure seu projeto no **Supabase** com as tabelas: `users`, `journeys`, `questions`, `answers`, `notifications`.
+2. Crie um arquivo `.env.local` baseado em `.env.example`.
+3. Defina a chave do Google AI Studio em `VITE_API_KEY`.
+4. Configure seu projeto no **Supabase** com as tabelas: `users`, `journeys`, `questions`, `answers`, `notifications`.
 
 ## 🏛️ Filosofia do Projeto
 Baseado no método de Sócrates, o app não entrega respostas prontas, mas faz perguntas que desafiam as premissas do interlocutor.
